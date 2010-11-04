@@ -22,6 +22,8 @@ sub new {
     my $admin_host            = delete $args{admin_host}            || '127.0.0.1';
     my $admin_port            = delete $args{admin_port}            || 90000;
     my $debug                 = delete $args{debug}                 || 0;
+    my $use_throttle_interval = delete $args{use_throttle_interval} || 1;
+    my $force_worker_interval = delete $args{force_worker_interval} || 0;
 
     my $qudo = Qudo->new(%args);
 
@@ -38,6 +40,8 @@ sub new {
         admin_port            => $admin_port,
         debug                 => $debug,
         qudo                  => $qudo,
+        use_throttle_interval => $use_throttle_interval,
+        force_worker_interval => $force_worker_interval,
     }, $class;
 
     if ($auto_load_worker) {
@@ -57,6 +61,8 @@ sub debug {
 
 sub run {
     my $self = shift;
+
+    $self->_set_func;
 
     $self->debug("START WORKING : $$\n");
 
@@ -80,7 +86,7 @@ sub run {
             local $SIG{TERM} = sub { $reqs_before_exit = 0 };
 
             while ($reqs_before_exit > 0) {
-                if (throttle(0.5, sub { $manager->work_once })) {
+                if ($self->_work_once) {
                     $self->debug("WORK $$\n");
                     --$reqs_before_exit
                 } else {
@@ -96,6 +102,22 @@ sub run {
     $pm->wait_all_children;
 
     $self->stop_admin_port($c_pid);
+}
+
+sub _work_once{
+    my $self = shift;
+
+    my $manager = $self->{qudo}->manager;
+
+    if($self->{use_throttle_interval}){
+        throttle(0.5, sub { $manager->work_once })
+    }else{
+        my $is_work = $manager->work_once;
+
+        sleep $self->{force_worker_interval};
+        
+        $is_work;
+    }
 }
 
 sub stop_admin_port {
@@ -151,6 +173,15 @@ sub pm {
 
         $pm;
     };
+}
+
+sub _set_func{
+    my $self = shift;
+
+    my $manager = $self->{qudo}->manager;
+    for my $dsn ($manager->shuffled_databases) {
+        $manager->funcnames_to_ids($dsn);
+    }
 }
 
 1;
